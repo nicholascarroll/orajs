@@ -1,17 +1,11 @@
-# Compiled
-*.elc
-
-# Packaging
+tempy
 .cask/
 .eask/
 .eldev/
 .keg/
-
-# Built distribution
 dist/
-
-# Backup files
 *~
+node_modules/
+*.elc
+test/env.sh
 
-# Undo-tree save-files
-*.~undo-tree

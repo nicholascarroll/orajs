@@ -1,0 +1,14 @@
+
+schema.sql,171
+create table emp (emp1,0
+  empno number primary key,empno2,19
+  ename varchar2(20)ename3,47
+create or replace view emp_v as select empno, ename from emp;emp_v5,71
+
+emp_api.pkb,113
+create or replace package body emp_api asemp_api1,0
+  procedure hire(n varchar2) is begin null; end;hire3,76
+
+other_api.pkb,105
+create or replace package body other_api asother_api1,0
+  procedure hire is begin null; end;hire2,44
