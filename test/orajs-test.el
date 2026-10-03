@@ -720,7 +720,14 @@ as mle language javascript
               (should (equal (with-temp-buffer (insert-file-contents file) (buffer-string)) js))
               (should (derived-mode-p 'js-mode))
               (should orajs-module-mode)
-              (should (orajs-test--module-overlay-text)))
+              (should (orajs-test--module-overlay-text))
+              ;; Compiling an edit does not mark the file saved.
+              (insert " ")
+              (cl-letf (((symbol-function 'orajs-connected-p) #'always)
+                        ((symbol-function 'orajs--send)
+                         (lambda (_op _args cb) (funcall cb '() nil))))
+                (orajs-module-compile))
+              (should (buffer-modified-p)))
             (kill-buffer buf))
           ;; C-x C-s in the buffer (no file yet): asked for a name, same result.
           (let ((buf (orajs-test--module-buffer js nil))
@@ -734,6 +741,58 @@ as mle language javascript
               (should (derived-mode-p 'sql-mode)))
             (kill-buffer buf)))
       (delete-directory dir t))))
+
+;; M-x orajs-find-object: the database's definition, from any buffer.
+(ert-deftest orajs-find-object ()
+  (orajs-test--with-fake-bridge
+      '(("resolve" :object (:owner "HR" :name "RAISE_PAY" :type "PROCEDURE"))
+        ("source" :text "procedure raise_pay is\nbegin\n  null;\nend;\n"))
+    (let (buf)
+      (unwind-protect
+          (with-temp-buffer
+            (cl-letf (((symbol-function 'read-string)
+                       (lambda (&rest _) "raise_pay")))
+              (call-interactively #'orajs-find-object))
+            (setq buf (current-buffer))
+            (should (equal (buffer-name) "*orajs: HR.RAISE_PAY procedure*"))
+            (should (string-prefix-p "CREATE OR REPLACE procedure HR.RAISE_PAY"
+                                     (buffer-string)))
+            (should (equal (cdr (assoc "resolve" orajs-test--sent)) '(:name "raise_pay")))
+            ;; Nothing there: says so.
+            (cl-letf (((symbol-function 'orajs--resolve) #'ignore))
+              (should-error (orajs-find-object "nope") :type 'user-error)))
+        (when (buffer-live-p buf) (kill-buffer buf))))))
+
+;; With % the database searches; one match opens, several are offered.
+(ert-deftest orajs-find-object-search ()
+  (let ((source '("source" :text "procedure p is\nbegin\n  null;\nend;\n"))
+        offered bufs)
+    (unwind-protect
+        (progn
+          (orajs-test--with-fake-bridge
+              `(("search" :rows [["HR" "RAISE_PAY" "PROCEDURE"]] :more nil) ,source)
+            (orajs-find-object "hr.raise%")
+            (push (current-buffer) bufs)
+            (should (equal (buffer-name) "*orajs: HR.RAISE_PAY procedure*"))
+            (should (equal (cdr (assoc "search" orajs-test--sent))
+                           (list :owner "hr" :name "raise%" :limit orajs--search-limit))))
+          (orajs-test--with-fake-bridge
+              `(("search" :rows [["HR" "EMP" "TABLE"] ["HR" "EMP_PAY" "PROCEDURE"]] :more t)
+                ,source)
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (prompt choices &rest _)
+                         (setq offered (cons prompt (mapcar #'car choices)))
+                         "HR.EMP_PAY (procedure)")))
+              (orajs-find-object "emp%"))
+            (push (current-buffer) bufs)
+            (should (equal offered '("Object (first 500 matches): "
+                                     "HR.EMP (table)" "HR.EMP_PAY (procedure)")))
+            (should (equal (plist-get (cdr (assoc "search" orajs-test--sent)) :owner) "%"))
+            (should (equal (buffer-name) "*orajs: HR.EMP_PAY procedure*")))
+          (orajs-test--with-fake-bridge '(("search" :rows [] :more nil))
+            (should-error (orajs-find-object "zz%") :type 'user-error)
+            (should-error (orajs-find-object "a.b.c%") :type 'user-error)))
+      (mapc #'kill-buffer bufs))))
 
 (ert-deftest orajs-grid-header-and-unload ()
   (unwind-protect

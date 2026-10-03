@@ -291,6 +291,18 @@ test('resolve, source and ddl (jump to definition)', async () => {
   assert.match(ddl.text, /"CUSTOMER" VARCHAR2\(40\)/);
 });
 
+test('search finds objects by LIKE patterns, in any case', async () => {
+  const r = await ok('search', { owner: ME.toLowerCase(), name: 'orajs%', limit: 100 });
+  assert.equal(r.more, false);
+  assert.ok(r.rows.some((x) => x[0] === ME && x[1] === 'ORAJS_PK' && x[2] === 'PACKAGE'));
+  assert.ok(r.rows.some((x) => x[1] === 'ORAJS_ORDERS' && x[2] === 'TABLE'));
+  assert.ok(r.rows.every((x) => x[1].startsWith('ORAJS')));
+  const one = await ok('search', { owner: ME, name: 'ORAJS%', limit: 1 });
+  assert.equal(one.rows.length, 1);
+  assert.equal(one.more, true);
+  assert.deepEqual((await ok('search', { owner: '%', name: 'no_such%', limit: 10 })).rows, []);
+});
+
 test('break interrupts a long query', async () => {
   const t0 = Date.now();
   // A cartesian product of small row sources: slow, but light on memory

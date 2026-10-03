@@ -525,6 +525,25 @@ const ops = {
     return { object: await resolve(a.name) };
   },
 
+  // Objects whose owner and name match LIKE patterns, in any case: up to
+  // LIMIT [owner, name, type] rows, of the kinds jump to definition opens;
+  // more is true if there were others.  A materialized view is listed once
+  // (ALL_OBJECTS also has its table).
+  async search(a) {
+    const r = await conn.execute(
+      `select owner, object_name, object_type from all_objects
+       where  upper(owner) like upper(:owner) and upper(object_name) like upper(:name)
+       and    object_type in ('TABLE', 'VIEW', 'MATERIALIZED VIEW', 'SEQUENCE', 'PACKAGE',
+                              'PROCEDURE', 'FUNCTION', 'TRIGGER', 'TYPE', 'MLE MODULE')
+       and    object_name not like 'BIN$%'
+       order  by owner, object_name, object_type
+       fetch  first :n rows only`,
+      { owner: a.owner, name: a.name, n: a.limit + 1 }, { fetchArraySize: 1000 });
+    const rows = r.rows.filter((x, i, all) => !(x[2] === 'TABLE' && i > 0 &&
+      all[i - 1][0] === x[0] && all[i - 1][1] === x[1] && all[i - 1][2] === 'MATERIALIZED VIEW'));
+    return { rows: rows.slice(0, a.limit), more: r.rows.length > a.limit };
+  },
+
   // Stored source (ALL_SOURCE) of a PL/SQL unit or MLE module, as one string;
   // null when there is none (e.g. no package body).  For an MLE module, also
   // its VERSION, which is not part of the source.
