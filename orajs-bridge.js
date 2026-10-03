@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// SPDX-License-Identifier: GPL-3.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Part of orajs: https://github.com/nicholascarroll/orajs
 // This is a ridge between Emacs (orajs.el) and Oracle.
 //

@@ -1,6 +1,5 @@
 {
   "name": "orajs-bridge",
-  "version": "0.1.0",
   "private": true,
   "license": "GPL-3.0-or-later",
   "description": "JSON-lines bridge between Emacs (orajs.el) and Oracle via node-oracledb Thin mode",
