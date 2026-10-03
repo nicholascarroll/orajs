@@ -109,8 +109,8 @@ An alist of (NAME . PLIST).  PLIST keys:
   :type 'string)
 
 (defcustom orajs-driver-directory (locate-user-emacs-file "orajs-driver/")
-  "Where `orajs-install-driver' puts the Oracle driver (node-oracledb).
-Outside the package's own directory, so package upgrades keep it."
+  "Directory whose node_modules holds node-oracledb.
+`orajs-install-driver' installs it here."
   :type 'directory)
 
 (defcustom orajs-page-size 100
