@@ -25,8 +25,7 @@ Company complete using completion-at-point (company-capf).
 
 ## Getting Up and Running
 
-You need to have installed Node.js 18 or later (and npm).  The Oracle driver, node-oracledb, is installed by npm into `orajs-driver-directory' on first connect (or 
-with M-x orajs-install-driver).
+You need to have installed Node.js 18 or later (and npm). The Oracle driver, node-oracledb, is installed by npm into `orajs-driver-directory` on first connect (or with `M-x orajs-install-driver`).
 
 Setup:
 
