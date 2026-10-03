@@ -47,7 +47,8 @@
 ;; TAGS file if there is one, else in the database (source, or DDL).
 ;; An MLE module (Oracle 23ai) opens as JavaScript in `js-mode', with its
 ;; CREATE statement shown above the code: C-c C-e edits that statement,
-;; C-c C-c compiles.
+;; C-c C-c compiles.  Saved to a .sql file it becomes the whole script
+;; (CREATE ... AS, the JavaScript, /); saved to a .js file, just the code.
 ;;
 ;; Completion (`completion-at-point', so company picks it up through
 ;; `company-capf'): table, view, schema and PL/SQL unit names, by clause;
@@ -1248,7 +1249,10 @@ on (it is read when connecting)."
 
 (defvar-local orajs--module-declaration nil
   "The CREATE statement, up to and including AS, of this MLE module buffer.
-Shown above the code; `orajs-module-compile' sends it before the code.")
+Shown above the code; `orajs-module-compile' sends it before the code.
+Permanent, so it survives the change to `sql-mode' that saving the
+buffer to a .sql file brings (see `orajs--module-save-as-script').")
+(put 'orajs--module-declaration 'permanent-local t)
 
 (defun orajs--module-declaration-for (owner name version)
   "CREATE OR REPLACE ... AS for MLE module OWNER.NAME, with VERSION if any."
@@ -1277,13 +1281,50 @@ Shown above the code; `orajs-module-compile' sends it before the code.")
 
 (define-minor-mode orajs-module-mode
   "Edit an MLE module fetched from the database.
-Its declaration (CREATE ... AS) is shown above the code.
+Its declaration (CREATE ... AS) is shown above the code.  Saved to a
+file that would open in `sql-mode' (a .sql file, say), the buffer
+becomes the whole script: declaration, JavaScript and a closing /, as
+Oracle's DDL export has it.  Saved to any other file (a .js file), it is
+just the JavaScript.
 \\{orajs-module-mode-map}"
   :lighter (:eval (orajs--lighter))
   :keymap orajs-module-mode-map
   (if orajs-module-mode
-      (orajs--module-show-declaration)
+      (progn
+        (orajs--module-show-declaration)
+        ;; Global: `set-visited-file-name' kills a buffer-local value.
+        (add-hook 'write-file-functions #'orajs--module-save-as-script))
     (remove-overlays (point-min) (point-max) 'orajs-module t)))
+
+(defun orajs--sql-file-p (file)
+  "Non-nil if FILE would open in `sql-mode', or a mode derived from it."
+  (let ((mode (assoc-default file auto-mode-alist #'string-match)))
+    (and mode (symbolp mode) (provided-mode-derived-p mode 'sql-mode))))
+
+(defun orajs--module-save-as-script ()
+  "Before a module buffer is written to a SQL file, make it the script.
+That is its declaration, the JavaScript and a closing /, in `sql-mode'.
+Returns nil, so the buffer is then written as usual.  For
+`write-file-functions', which runs once the file name is known; by
+then Emacs has usually switched the buffer to `sql-mode' itself (see
+`change-major-mode-with-file-name')."
+  (when (and orajs--module-declaration buffer-file-name
+             (orajs--sql-file-p buffer-file-name))
+    (let ((header (concat orajs--module-declaration "\n"))
+          (pos (point)))
+      (when orajs-module-mode (orajs-module-mode -1))
+      (remove-overlays (point-min) (point-max) 'orajs-module t)
+      (setq orajs--module-declaration nil)
+      (save-restriction
+        (widen)
+        (goto-char (point-min))
+        (insert header)
+        (goto-char (point-max))
+        (unless (bolp) (insert "\n"))
+        (insert "/\n"))
+      (orajs--sql-buffer-setup)
+      (goto-char (+ pos (length header)))))
+  nil)
 
 (defun orajs--module-setup (owner name version)
   "Mode for MLE module OWNER.NAME of VERSION: `js-mode', `orajs-module-mode'."

@@ -48,6 +48,13 @@ auth-source (machine = connection name, login = user, and login =
 "wallet" for the wallet password), else a prompt. 
 
 
+## Editing MLE (JavaScript) modules
+
+You can open an MLE module directly from the database (`M-.`), which  opens its JavaScript in `js-mode`.  Its `CREATE` statement is shown above the code. the default keybinding to edit this is `C-c C-e`. `C-c C-c` compiles; errors put point where Oracle reports them.
+
+Saving the buffer with an SQL or PLSQL filename suffixed (per your alist) adds the `CREATE` statement to the file and makes it a valid SQL script.
+
+
 ## License
 
 GNU GPL 3.0

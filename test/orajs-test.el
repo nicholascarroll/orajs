@@ -690,6 +690,51 @@ as mle language javascript
                                          (plist-get (nth 1 sent) :sql)))))))
       (kill-buffer buf))))
 
+(ert-deftest orajs-module-save-as ()
+  (let ((dir (make-temp-file "orajs-save" t))
+        (js "export function f() {\n  return 1;\n}\n"))
+    (unwind-protect
+        (progn
+          ;; C-x C-w to a .sql file: the whole script, now a SQL buffer.
+          (let ((buf (orajs-test--module-buffer js "1.0")))
+            (with-current-buffer buf
+              (let ((decl orajs--module-declaration)
+                    (file (expand-file-name "calc.sql" dir)))
+                (goto-char (point-min)) (search-forward "return")
+                (write-file file)
+                (should (equal (with-temp-buffer (insert-file-contents file) (buffer-string))
+                               (concat decl "\n" js "/\n")))
+                (should (derived-mode-p 'sql-mode))
+                (should orajs-mode)
+                (should-not orajs-module-mode)
+                (should-not (orajs-test--module-overlay-text))
+                (should-not (buffer-modified-p))
+                ;; Point stays on the same code.
+                (should (looking-back "return" (line-beginning-position)))))
+            (kill-buffer buf))
+          ;; C-x C-w to a .js file: just the JavaScript; still a module buffer.
+          (let ((buf (orajs-test--module-buffer js "1.0"))
+                (file (expand-file-name "calc.js" dir)))
+            (with-current-buffer buf
+              (write-file file)
+              (should (equal (with-temp-buffer (insert-file-contents file) (buffer-string)) js))
+              (should (derived-mode-p 'js-mode))
+              (should orajs-module-mode)
+              (should (orajs-test--module-overlay-text)))
+            (kill-buffer buf))
+          ;; C-x C-s in the buffer (no file yet): asked for a name, same result.
+          (let ((buf (orajs-test--module-buffer js nil))
+                (file (expand-file-name "asked.sql" dir)))
+            (with-current-buffer buf
+              (set-buffer-modified-p t)
+              (cl-letf (((symbol-function 'read-file-name) (lambda (&rest _) file)))
+                (save-buffer))
+              (should (string-prefix-p "CREATE OR REPLACE MLE MODULE U.CALC LANGUAGE JAVASCRIPT AS\nexport"
+                                       (with-temp-buffer (insert-file-contents file) (buffer-string))))
+              (should (derived-mode-p 'sql-mode)))
+            (kill-buffer buf)))
+      (delete-directory dir t))))
+
 (ert-deftest orajs-grid-header-and-unload ()
   (unwind-protect
       (progn
