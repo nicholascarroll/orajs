@@ -140,7 +140,7 @@ const QUERY = /^\s*(?:\/\*[\s\S]*?\*\/\s*|--[^\n]*\n\s*)*(?:select|with|\()/i;
 
 // CREATE [OR REPLACE] [EDITIONABLE] <plsql unit | MLE MODULE> [owner.]name — Thin mode does
 // not report ORA-24344 "success with compilation error", so after one of these
-// the helper reads ALL_ERRORS itself.
+// the bridge reads ALL_ERRORS itself.
 const PLSQL_CREATE = new RegExp(String.raw`^\s*create\s+(?:or\s+replace\s+)?` +
   String.raw`(?:(?:editionable|noneditionable)\s+)?` +
   String.raw`(package\s+body|package|procedure|function|trigger|type\s+body|type|mle\s+module)\s+` +

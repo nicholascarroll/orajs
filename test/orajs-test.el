@@ -1,10 +1,10 @@
 ;;; orajs-test.el --- ERT tests for orajs  -*- lexical-binding: t; -*-
 
-;; Unit tests need no database: where one is involved, the helper is
+;; Unit tests need no database: where one is involved, the bridge is
 ;; replaced by canned replies.  The orajs-live-* tests go through the
-;; real helper to a real database when ORAJS_SERVICE is set (CI runs
+;; real bridge to a real database when ORAJS_SERVICE is set (CI runs
 ;; Oracle Database Free; locally, source test/env.sh), else they skip.
-;; test/bridge-test.js covers the helper protocol in depth.
+;; test/bridge-test.js covers the bridge protocol in depth.
 ;;
 ;;   emacs --batch -Q -L . -l test/orajs-test.el -f ert-run-tests-batch-and-exit
 
@@ -274,7 +274,7 @@ update t set a = 1")
        (should (equal (orajs-test--complete) '("order_pkg" "order_v" "orders"))))
      (should (= (length orajs-test--describe-calls) 1)))))
 
-(defmacro orajs-test--with-fake-helper (replies &rest body)
+(defmacro orajs-test--with-fake-bridge (replies &rest body)
   "Run BODY with `orajs--send' answering from REPLIES, an alist (OP . OK).
 Requests are recorded in `orajs-test--sent'."
   (declare (indent 1))
@@ -300,7 +300,7 @@ Requests are recorded in `orajs-test--sent'."
                    ("members" :rows [["HR" "EMP_API" "HIRE" "PROCEDURE" 1]])
                    ("dictionary" :server "23.26" :rows [["DUAL" nil]] :packages ["DBMS_OUTPUT"])))
         (asked 0) (answer nil))
-    (orajs-test--with-fake-helper replies
+    (orajs-test--with-fake-bridge replies
       (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) (cl-incf asked) answer)))
         (orajs--reset-cache)
         (setq orajs--user "HR")
@@ -340,7 +340,7 @@ Requests are recorded in `orajs-test--sent'."
         (should (string-match-p "up to date" (orajs-test--message)))))))
 
 (ert-deftest orajs-download-under-limit-no-question ()
-  (orajs-test--with-fake-helper
+  (orajs-test--with-fake-bridge
       '(("summary" :count 3 :ddl "2026-09-30T10:00:00")
         ("objects" :schemas ["HR"] :objects [["HR" "EMP" "TABLE" "2026-09-30T10:00:00"]])
         ("columns" :rows [["HR" "EMP" "EMPNO" "NUMBER"]])
@@ -823,7 +823,7 @@ as mle language javascript
     (goto-char (orajs--mle-error-position (point-min) 2 12))
     (should (looking-at-p ";"))))
 
-;;;; Live: orajs.el, the real helper and a real database
+;;;; Live: orajs.el, the real bridge and a real database
 
 (defun orajs-test--live-p ()
   "Non-nil if a live database is configured and not past ORAJS_TEST_CUTOFF."
@@ -866,7 +866,7 @@ as mle language javascript
          (delete-directory orajs-cache-directory t)))))
 
 (defun orajs-test--live-exec (sql)
-  "Run SQL on the live connection; return the helper's reply."
+  "Run SQL on the live connection; return the bridge's reply."
   (orajs--request-sync "exec" (list :sql sql) 60))
 
 (ert-deftest orajs-live-connect-and-cache ()

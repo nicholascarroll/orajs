@@ -23,12 +23,12 @@ if (env.ORAJS_TEST_CUTOFF && today > env.ORAJS_TEST_CUTOFF) {
 
 const proc = spawn(process.execPath, [path.join(__dirname, '..', 'orajs-bridge.js')],
                    { stdio: ['pipe', 'pipe', 'inherit'] });
-// If the helper dies (e.g. node-oracledb not installed), the replies we wait
+// If the bridge dies (e.g. node-oracledb not installed), the replies we wait
 // for never come and Node would exit 0: fail instead.
 let quitting = false;
 proc.on('exit', (code, signal) => {
   if (quitting) return;
-  console.log(`FAIL helper exited early (${signal || `code ${code}`})`);
+  console.log(`FAIL bridge exited early (${signal || `code ${code}`})`);
   process.exit(1);
 });
 const waiting = new Map();

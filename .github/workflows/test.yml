@@ -54,8 +54,8 @@ jobs:
           exit
           SQL
 
-      - name: Helper protocol (node-oracledb against the database)
+      - name: Bridge protocol (node-oracledb against the database)
         run: node test/bridge-test.js
       - name: ERT (unit tests, plus orajs-live-* against the database)
-        if: success() || failure()   # run even when the helper test failed
+        if: success() || failure()   # run even when the bridge test failed
         run: emacs --batch -Q -L . -l test/orajs-test.el -f ert-run-tests-batch-and-exit

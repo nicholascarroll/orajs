@@ -26,7 +26,7 @@
 ;;; Commentary:
 
 ;; A minor mode for `sql-mode' buffers (.sql, and .pks/.pkb/.pkh/.pls/.plb
-;; package files) that talks to Oracle through a small Node.js helper
+;; package files) that talks to Oracle through a small Node.js bridge
 ;; (orajs-bridge.js, node-oracledb Thin mode: no Instant Client needed).
 ;;
 ;;   C-c C-c   run the statement at point (or the region); queries go to a
@@ -53,8 +53,8 @@
 ;; functions of package x, or the objects of schema x.
 ;;
 ;; Needs Node.js 18 or later (and npm).  The Oracle driver, node-oracledb,
-;; is installed by npm into `orajs-bridge-directory' the first time you
-;; connect (or with M-x orajs-install-helper), so package upgrades keep it.
+;; is installed by npm into `orajs-driver-directory' the first time you
+;; connect (or with M-x orajs-install-driver), so package upgrades keep it.
 ;;
 ;; Setup:
 ;;
@@ -101,15 +101,15 @@ An alist of (NAME . PLIST).  PLIST keys:
   :type '(alist :key-type string :value-type plist))
 
 (defcustom orajs-node-program "node"
-  "The Node.js executable (version 18 or later) used to run the helper."
+  "The Node.js executable (version 18 or later) used to run the bridge."
   :type 'string)
 
 (defcustom orajs-npm-program "npm"
-  "The npm executable used by `orajs-install-helper'."
+  "The npm executable used by `orajs-install-driver'."
   :type 'string)
 
-(defcustom orajs-bridge-directory (locate-user-emacs-file "orajs-bridge/")
-  "Where `orajs-install-helper' puts the Oracle driver (node-oracledb).
+(defcustom orajs-driver-directory (locate-user-emacs-file "orajs-driver/")
+  "Where `orajs-install-driver' puts the Oracle driver (node-oracledb).
 Outside the package's own directory, so package upgrades keep it."
   :type 'directory)
 
@@ -144,10 +144,10 @@ connecting; costs one extra round trip per statement."
 
 ;;;; Connection state (one connection per Emacs)
 
-(defvar orajs--process nil "The helper process.")
+(defvar orajs--process nil "The bridge process.")
 (defvar orajs--callbacks (make-hash-table) "Request id -> callback.")
 (defvar orajs--next-id 0)
-(defvar orajs--partial "" "Helper output not yet ended by a newline.")
+(defvar orajs--partial "" "Bridge output not yet ended by a newline.")
 (defvar orajs--connection nil "Name of the connected entry in `orajs-connections'.")
 (defvar orajs--user nil "Database user of the connection, upper case.")
 (defvar orajs--server nil "Database version of the connection, e.g. \"23.26.3.3.0\".")
@@ -173,18 +173,18 @@ Every table and view of the user schemas; :ddl is its LAST_DDL_TIME.")
 It takes a list of names as written and returns an alist
 \(NAME . ENTRY-OR-NIL); ENTRY as in `orajs--tables'.")
 
-;;;; Helper process
+;;;; Bridge process
 
 (defun orajs--start ()
-  "Start the helper process."
+  "Start the bridge process."
   (let ((script (expand-file-name "orajs-bridge.js" orajs--directory))
         ;; The driver: next to the script in a development checkout, else in
-        ;; `orajs-bridge-directory' (NODE_PATH is searched after the former).
+        ;; `orajs-driver-directory' (NODE_PATH is searched after the former).
         (process-environment
          (cons (concat "NODE_PATH="
-                       (expand-file-name "node_modules" orajs-bridge-directory))
+                       (expand-file-name "node_modules" orajs-driver-directory))
                process-environment)))
-    ;; Each helper gets its own callback table, so a previous helper's
+    ;; Each bridge gets its own callback table, so a previous bridge's
     ;; late sentinel fails only its own requests (see `orajs--sentinel').
     (setq orajs--partial ""
           orajs--callbacks (make-hash-table)
@@ -202,8 +202,8 @@ It takes a list of names as written and returns an alist
     orajs--process))
 
 (defun orajs--filter (proc output)
-  "Split helper OUTPUT into lines and dispatch each reply.
-Output from a helper PROC that has since been replaced is ignored."
+  "Split bridge OUTPUT into lines and dispatch each reply.
+Output from a bridge PROC that has since been replaced is ignored."
   (when (eq proc orajs--process)
     (setq orajs--partial (concat orajs--partial output))
     (let ((lines (split-string orajs--partial "\n")))
@@ -225,9 +225,9 @@ Output from a helper PROC that has since been replaced is ignored."
         (error (message "orajs: %s" (error-message-string err)))))))
 
 (defun orajs--sentinel (proc _event)
-  "Clean up when the helper PROC exits.
+  "Clean up when the bridge PROC exits.
 Fail PROC's pending requests.  Reset the connection state only if PROC
-is still the current helper: Emacs may run the sentinel of a helper that
+is still the current bridge: Emacs may run the sentinel of a bridge that
 `orajs-disconnect' stopped after `orajs-connect' has started the next
 one, and that must not touch the new connection."
   (unless (process-live-p proc)
@@ -240,12 +240,12 @@ one, and that must not touch the new connection."
               orajs--connection nil
               orajs--user nil))
       (maphash (lambda (_id cb)
-                 (ignore-errors (funcall cb nil '(:message "helper exited"))))
+                 (ignore-errors (funcall cb nil '(:message "bridge exited"))))
                pending))
     (force-mode-line-update t)))
 
 (defun orajs--send (op args callback)
-  "Send OP with ARGS (a plist) to the helper; call CALLBACK with (OK ERROR)."
+  "Send OP with ARGS (a plist) to the bridge; call CALLBACK with (OK ERROR)."
   (unless (process-live-p orajs--process)
     (user-error "Not connected; use M-x orajs-connect"))
   (let ((id (cl-incf orajs--next-id)))
@@ -273,10 +273,10 @@ Return OK, or signal an error.  For tests and scripting."
 ;;;; Installing the driver
 
 (defun orajs--driver-installed-p ()
-  "Non-nil if node-oracledb is where the helper will look for it."
+  "Non-nil if node-oracledb is where the bridge will look for it."
   (seq-some (lambda (dir)
               (file-exists-p (expand-file-name "node_modules/oracledb/package.json" dir)))
-            (list orajs--directory orajs-bridge-directory)))
+            (list orajs--directory orajs-driver-directory)))
 
 (defun orajs--driver-version ()
   "The node-oracledb version range the package asks for, from package.json."
@@ -301,13 +301,13 @@ Return OK, or signal an error.  For tests and scripting."
                 orajs-npm-program)))
 
 ;;;###autoload
-(defun orajs-install-helper ()
-  "Install (or update) node-oracledb into `orajs-bridge-directory' with npm.
+(defun orajs-install-driver ()
+  "Install (or update) node-oracledb into `orajs-driver-directory' with npm.
 The version is the one in the package's package.json.  Output goes to
 the *orajs-install* buffer, which is shown if npm fails."
   (interactive)
   (orajs--check-node)
-  (let* ((dir (file-name-as-directory (expand-file-name orajs-bridge-directory)))
+  (let* ((dir (file-name-as-directory (expand-file-name orajs-driver-directory)))
          (spec (concat "oracledb@" (orajs--driver-version)))
          (buf (get-buffer-create "*orajs-install*")))
     (make-directory dir t)
@@ -328,8 +328,8 @@ the *orajs-install* buffer, which is shown if npm fails."
   "Offer to install node-oracledb if it is missing; signal if declined."
   (unless (orajs--driver-installed-p)
     (if (y-or-n-p "Install the orajs Oracle driver now (node-oracledb, ~5 MB, via npm)? ")
-        (orajs-install-helper)
-      (user-error "Not connecting: the Oracle driver is not installed (M-x orajs-install-helper)"))))
+        (orajs-install-driver)
+      (user-error "Not connecting: the Oracle driver is not installed (M-x orajs-install-driver)"))))
 
 ;;;; Connecting
 
@@ -355,7 +355,7 @@ the connection's name, else PROMPT."
       (and tns (file-exists-p (expand-file-name "ewallet.pem" tns)))))
 
 (defun orajs--connect-args (spec password wallet)
-  "Helper arguments to open connection SPEC with PASSWORD and WALLET password.
+  "Bridge arguments to open connection SPEC with PASSWORD and WALLET password.
 Keys without a value are left out (JSON has no use for them)."
   (let ((tns (when-let* ((dir (plist-get spec :tns-admin)))
                (expand-file-name dir)))
@@ -623,7 +623,7 @@ download was declined before.
           (hash-table-count orajs--tables) (hash-table-count orajs--programs) what))
 
 (defun orajs--detail-keys (keys hash)
-  "KEYS of HASH as a vector of [OWNER NAME] pairs for the helper."
+  "KEYS of HASH as a vector of [OWNER NAME] pairs for the bridge."
   (vconcat (mapcar (lambda (k) (let ((e (gethash k hash)))
                                  (vector (plist-get e :owner) (plist-get e :name))))
                    keys)))
@@ -653,7 +653,7 @@ STAMP, the (COUNT . DDL) just read, is recorded when all went well."
                (orajs--sync-dictionary summary t))))))))))
 
 (defun orajs--fetch-details (op arg keys hash put then)
-  "Ask the helper OP for details of KEYS of HASH (argument ARG), store with PUT.
+  "Ask the bridge OP for details of KEYS of HASH (argument ARG), store with PUT.
 No request when KEYS is empty; all of them in one go above
 `orajs--detail-batch-limit'.  Then call THEN."
   (if (null keys)

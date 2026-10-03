@@ -4,6 +4,11 @@
 An Emacs minor mode for connecting an `sql-mode` buffer to an Oracle database. 
 It uses **vtable**, **company** and **node-oracledb** Thin mode. 
 
+![query results in a vtable grid and column completion in an sql-mode buffer](./IMG_6581.png)
+
+
+
+
 Commands are in orajs-command-map, which you bind to a prefix of your choice (`C-c o` for example). After your prefix:
 
   `c`  connect   
@@ -20,8 +25,8 @@ Company complete using completion-at-point (company-capf).
 
 ## Getting Up and Running
 
-You need to have installed Node.js 18 or later (and npm).  The Oracle driver, node-oracledb, is installed by npm into `orajs-bridge-directory' on first connect (or 
-with M-x orajs-install-helper).
+You need to have installed Node.js 18 or later (and npm).  The Oracle driver, node-oracledb, is installed by npm into `orajs-driver-directory' on first connect (or 
+with M-x orajs-install-driver).
 
 Setup:
 
