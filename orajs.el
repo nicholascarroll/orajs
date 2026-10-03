@@ -41,11 +41,13 @@
 ;;   k  cancel the running statement
 ;;   d  disconnect
 ;;   o  show DBMS_OUTPUT (and JavaScript console.log) in *orajs-output*
-;;   m  deploy the current JavaScript buffer as an MLE module (Oracle 23ai)
 ;;   t  build a TAGS file of your SQL files, searched first on M-.
 ;;
 ;; Jump to definition (M-., back with M-,) finds the name at point in the
 ;; TAGS file if there is one, else in the database (source, or DDL).
+;; An MLE module (Oracle 23ai) opens as JavaScript in `js-mode', with its
+;; CREATE statement shown above the code: C-c C-e edits that statement,
+;; C-c C-c compiles.
 ;;
 ;; Completion (`completion-at-point', so company picks it up through
 ;; `company-capf'): table, view, schema and PL/SQL unit names, by clause;
@@ -1034,7 +1036,7 @@ BEG is where the statement starts."
 (defun orajs--compile-error-position (type body-start line position)
   "Source position of a compile error of an object of TYPE.
 BODY-START is where Oracle's line 1 starts: the CREATE line for PL/SQL,
-the code after AS (or a deployed buffer's start) for an MLE module.
+the code after AS (or a module buffer's start) for an MLE module.
 LINE and POSITION are ALL_ERRORS's."
   (if (equal type "MLE MODULE")
       (orajs--mle-error-position body-start line position)
@@ -1191,7 +1193,7 @@ That is, the position just after its AS keyword."
 (defun orajs--mle-error-position (body-start line position)
   "Buffer position of an MLE module error at LINE and POSITION.
 BODY-START is where the JavaScript begins (after AS, or the start of a
-deployed buffer).  Oracle stores the code from its first non-blank
+module buffer).  Oracle stores the code from its first non-blank
 character and numbers lines from there, so line 1 may start mid-line;
 POSITION counts from 0 (PL/SQL's count from 1)."
   (save-excursion
@@ -1239,68 +1241,112 @@ on (it is read when connecting)."
 
 ;;;; JavaScript (MLE) modules, Oracle 23ai
 
-(defvar-local orajs-module-name nil
-  "Name of the MLE module `orajs-deploy-module' creates from this buffer.
-The default when `orajs-deploy-module' asks; nil means the file's name.
-May be set as a file-local variable, e.g.
-// -*- orajs-module-name: \"hr.calc\" -*-")
-;;;###autoload(put 'orajs-module-name 'safe-local-variable #'stringp)
+;; M-. on an MLE module opens its JavaScript, exactly as Oracle stores it,
+;; in `js-mode'.  The CREATE statement is not JavaScript, so it is drawn
+;; above the code rather than kept in the buffer: line N of the buffer is
+;; Oracle's line N.
 
-(defun orajs--default-module-name ()
-  "An MLE module name made from the buffer's file name, or nil."
-  (when buffer-file-name
-    (upcase (replace-regexp-in-string "[^A-Za-z0-9_$#]" "_"
-                                      (file-name-base buffer-file-name)))))
+(defvar-local orajs--module-declaration nil
+  "The CREATE statement, up to and including AS, of this MLE module buffer.
+Shown above the code; `orajs-module-compile' sends it before the code.")
 
-(defun orajs--module-sql (name source)
-  "DDL creating MLE module NAME from JavaScript SOURCE, and its header length.
-Returns (SQL . HEADER-LENGTH); SOURCE starts on the line after the header."
-  (let ((header (format "create or replace mle module %s language javascript as\n"
-                        name)))
-    (cons (concat header source) (length header))))
+(defun orajs--module-declaration-for (owner name version)
+  "CREATE OR REPLACE ... AS for MLE module OWNER.NAME, with VERSION if any."
+  (format "CREATE OR REPLACE MLE MODULE %s.%s LANGUAGE JAVASCRIPT%s AS"
+          (orajs--quote-ident owner) (orajs--quote-ident name)
+          (if (or (null version) (string-empty-p version))
+              ""
+            (format " VERSION '%s'" (string-replace "'" "''" version)))))
 
-;;;###autoload
-(defun orajs-deploy-module (name)
-  "Create or replace the MLE module NAME from this buffer's JavaScript.
-Needs Oracle Database 23ai.  NAME is asked for each time, defaulting to
-the last one used (`orajs-module-name'), else the file's name.  On an
-error, point goes where Oracle says.
-Call the module's functions from SQL through a PL/SQL call spec, e.g.
-  create function add2(a number, b number) return number
-    as mle module NAME signature \\='add(number, number)\\=';"
-  (interactive
-   (let ((default (or orajs-module-name (orajs--default-module-name))))
-     (list (read-string (format-prompt "MLE module name" default)
-                        nil nil default))))
+(defun orajs--module-show-declaration ()
+  "Draw the declaration and a key hint above the code."
+  (remove-overlays (point-min) (point-max) 'orajs-module t)
+  (let ((ov (make-overlay (point-min) (point-min))))
+    (overlay-put ov 'orajs-module t)
+    (overlay-put ov 'before-string
+                 (concat orajs--module-declaration "\n"
+                         (propertize
+                          (substitute-command-keys
+                           "\\<orajs-module-mode-map>\\[orajs-module-edit-declaration] edit declaration · \\[orajs-module-compile] compile")
+                          'face 'shadow)
+                         "\n"))))
+
+(defvar-keymap orajs-module-mode-map
+  "C-c C-c" #'orajs-module-compile
+  "C-c C-e" #'orajs-module-edit-declaration)
+
+(define-minor-mode orajs-module-mode
+  "Edit an MLE module fetched from the database.
+Its declaration (CREATE ... AS) is shown above the code.
+\\{orajs-module-mode-map}"
+  :lighter (:eval (orajs--lighter))
+  :keymap orajs-module-mode-map
+  (if orajs-module-mode
+      (orajs--module-show-declaration)
+    (remove-overlays (point-min) (point-max) 'orajs-module t)))
+
+(defun orajs--module-setup (owner name version)
+  "Mode for MLE module OWNER.NAME of VERSION: `js-mode', `orajs-module-mode'."
+  (funcall (alist-get 'js-mode major-mode-remap-alist #'js-mode))
+  (setq orajs--module-declaration (orajs--module-declaration-for owner name version))
+  (orajs-module-mode 1))
+
+(defun orajs-module-edit-declaration ()
+  "Edit this module's declaration (its CREATE statement) in the minibuffer.
+It takes effect on the next \\[orajs-module-compile]."
+  (interactive)
+  (let ((new (string-trim (read-string "Declaration: " orajs--module-declaration))))
+    (when (string-empty-p new) (user-error "No declaration"))
+    (unless (equal new orajs--module-declaration)
+      (setq orajs--module-declaration new)
+      (set-buffer-modified-p t)
+      (orajs--module-show-declaration))))
+
+(defun orajs--module-replaces-p (declaration)
+  "Non-nil if DECLARATION is CREATE OR REPLACE (so it can be run again)."
+  (let ((case-fold-search t))
+    (and (string-match-p "\\`create[[:space:]]+or[[:space:]]+replace[[:space:]]" declaration)
+         (not (string-match-p "\\bif[[:space:]]+not[[:space:]]+exists\\b" declaration)))))
+
+(defun orajs--module-replacing (declaration)
+  "DECLARATION as CREATE OR REPLACE, without IF NOT EXISTS."
+  (let ((case-fold-search t))
+    (replace-regexp-in-string
+     "\\`create[[:space:]]+\\(?:or[[:space:]]+replace[[:space:]]+\\)?" "CREATE OR REPLACE "
+     (replace-regexp-in-string "\\bif[[:space:]]+not[[:space:]]+exists[[:space:]]+" ""
+                               declaration t t)
+     t t)))
+
+(defun orajs-module-compile ()
+  "Compile this MLE module: its declaration, then the buffer's JavaScript.
+On an error, point goes where Oracle says."
+  (interactive)
   (unless (orajs-connected-p) (user-error "Not connected; use M-x orajs-connect"))
-  (when (or (null name) (string-blank-p name)) (user-error "No module name"))
-  (setq orajs-module-name name)
-  (pcase-let* ((`(,sql . ,header-length)
-                (orajs--module-sql name (buffer-substring-no-properties
-                                         (point-min) (point-max))))
-               (source (current-buffer))
-               (start (float-time)))
-    (message "orajs: deploying MLE module %s..." name)
+  (unless (orajs--module-replaces-p orajs--module-declaration)
+    (unless (y-or-n-p "Without OR REPLACE, compiling an existing module fails or does nothing.  Make it CREATE OR REPLACE? ")
+      (user-error "Not compiled"))
+    (setq orajs--module-declaration (orajs--module-replacing orajs--module-declaration))
+    (orajs--module-show-declaration))
+  (let* ((header (concat orajs--module-declaration "\n"))
+         (sql (concat header (save-restriction
+                               (widen)
+                               (buffer-substring-no-properties (point-min) (point-max)))))
+         (source (current-buffer))
+         (tick (buffer-chars-modified-tick))
+         (start (float-time)))
+    (message "orajs: compiling...")
     (orajs--send "exec" (list :sql sql :maxRows orajs-page-size)
                  (lambda (ok err)
-                   (orajs--report-deploy name ok err source header-length
+                   (orajs--report-module ok err source (length header) tick
                                          (- (float-time) start))
                    (orajs--show-output (plist-get (or err ok) :output)
-                                       (format "mle module %s" name))))))
+                                       orajs--module-declaration)))))
 
-(defun orajs--goto-in (buffer pos)
-  "Move point to POS in BUFFER and in the windows showing it."
-  (when (buffer-live-p buffer)
-    (with-current-buffer buffer
-      (let ((pos (max (point-min) (min (point-max) pos))))
-        (dolist (w (get-buffer-window-list buffer nil t))
-          (set-window-point w pos))
-        (goto-char pos)))))
-
-(defun orajs--report-deploy (name ok err source header-length seconds)
-  "Report deploying MLE module NAME from SOURCE: result OK or error ERR.
-HEADER-LENGTH is the length of the DDL before the JavaScript; SECONDS
-how long it took."
+(defun orajs--report-module (ok err source header-length tick seconds)
+  "Report compiling the module in SOURCE: result OK or error ERR.
+HEADER-LENGTH is the length of the DDL before the JavaScript; TICK was
+SOURCE's `buffer-chars-modified-tick' when it was sent; SECONDS is how
+long it took."
   (cond
    (err
     (let ((offset (plist-get err :offset)))
@@ -1314,7 +1360,21 @@ how long it took."
        ce source (with-current-buffer source (point-min))
        (format "MLE MODULE %s" (plist-get ce :object)))))
    (t (orajs--clear-compile-errors)
-      (message "orajs: MLE module %s deployed (%.2fs)" name seconds))))
+      (when (buffer-live-p source)
+        (with-current-buffer source
+          ;; Unless edited while it compiled: then those edits are not in.
+          (when (= tick (buffer-chars-modified-tick))
+            (set-buffer-modified-p nil))))
+      (message "orajs: MLE module compiled (%.2fs)" seconds))))
+
+(defun orajs--goto-in (buffer pos)
+  "Move point to POS in BUFFER and in the windows showing it."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (let ((pos (max (point-min) (min (point-max) pos))))
+        (dolist (w (get-buffer-window-list buffer nil t))
+          (set-window-point w pos))
+        (goto-char pos)))))
 
 ;;;; Results grid
 
@@ -1900,18 +1960,19 @@ it is, not fetched again."
 
 (defun orajs--source-buffer (owner name type)
   "Buffer with the stored source of OWNER.NAME of TYPE, or nil if none."
-  (orajs--object-buffer
-   owner name (downcase type)
-   (lambda ()
-     (when-let* ((text (plist-get (orajs--request-sync
-                                   "source" (list :owner owner :name name :type type) 30)
-                                  :text)))
-       (if (equal type "MLE MODULE") text (orajs--recreatable-source text owner name))))
-   (if (equal type "MLE MODULE")
-       (lambda ()
-         (js-mode)
-         (setq-local orajs-module-name (concat owner "." name)))
-     #'orajs--sql-buffer-setup)))
+  (let ((mle (equal type "MLE MODULE"))
+        version)
+    (orajs--object-buffer
+     owner name (downcase type)
+     (lambda ()
+       (let ((reply (orajs--request-sync
+                     "source" (list :owner owner :name name :type type) 30)))
+         (setq version (plist-get reply :version))
+         (when-let* ((text (plist-get reply :text)))
+           (if mle text (orajs--recreatable-source text owner name)))))
+     (if mle
+         (lambda () (orajs--module-setup owner name version))
+       #'orajs--sql-buffer-setup))))
 
 (defun orajs--ddl-buffer (owner name type)
   "Buffer with DBMS_METADATA's DDL of OWNER.NAME of TYPE (a table, view ...)."
@@ -2153,7 +2214,6 @@ Not bound to a key by default; bind it to a prefix you like, e.g.
   "r" #'orajs-refresh-cache
   "s" #'orajs-download-schemas
   "o" #'orajs-show-output
-  "m" #'orajs-deploy-module
   "t" #'orajs-make-tags)
 
 (defvar-keymap orajs-mode-map

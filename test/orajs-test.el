@@ -572,40 +572,123 @@ as mle language javascript
       (delete-directory wallet-dir t)
       (delete-directory plain-dir t))))
 
-(ert-deftest orajs-deploy-sends-module ()
-  (with-temp-buffer
-    (insert "export function f() {\n  return 1;\n}\n")
-    (let (sent)
-      (cl-letf (((symbol-function 'orajs-connected-p) #'always)
-                ((symbol-function 'orajs--send)
-                 (lambda (op args cb) (setq sent (list op args cb)))))
-        (orajs-deploy-module "calc")
-        (should (equal (car sent) "exec"))
-        (should (string-prefix-p "create or replace mle module calc language javascript as\nexport function f()"
-                                 (plist-get (nth 1 sent) :sql)))
-        (should (equal orajs-module-name "calc"))
-        ;; An error at offset N of the DDL lands in the JavaScript.
-        (let ((header (cdr (orajs--module-sql "calc" ""))))
+(defun orajs-test--module-buffer (text version &optional name)
+  "An MLE module buffer for U.NAME (default CALC) holding TEXT, of VERSION."
+  (orajs-test--with-fake-bridge `(("source" :text ,text :version ,version))
+    (orajs--source-buffer "U" (or name "CALC") "MLE MODULE")))
+
+(defun orajs-test--module-overlay-text ()
+  (seq-some (lambda (ov) (overlay-get ov 'before-string))
+            (overlays-in (point-min) (point-min))))
+
+(ert-deftest orajs-module-buffer ()
+  (let ((buf (orajs-test--module-buffer "export function f() {\n  return 1;\n}\n" "1.2.3"
+                                        "calcRules")))
+    (unwind-protect
+        (with-current-buffer buf
+          ;; Exactly Oracle's source, as JavaScript.
+          (should (derived-mode-p 'js-mode))
+          (should orajs-module-mode)
+          (should (equal (buffer-string) "export function f() {\n  return 1;\n}\n"))
+          (should-not (buffer-modified-p))
+          ;; The declaration, drawn above the code: quoted name, version kept.
+          (should (equal orajs--module-declaration
+                         "CREATE OR REPLACE MLE MODULE U.\"calcRules\" LANGUAGE JAVASCRIPT VERSION '1.2.3' AS"))
+          (let ((shown (orajs-test--module-overlay-text)))
+            (should (string-prefix-p (concat orajs--module-declaration "\n") shown))
+            (should (string-match-p "C-c C-e edit declaration · C-c C-c compile" shown)))
+          ;; Text typed at the very start goes below it, not above.
           (goto-char (point-min))
-          (funcall (nth 2 sent) nil (list :message "ORA-04045: bad"
-                                          :offset (+ header 25)))
-          (should (= (point) 26))
-          (should (string-match-p "ORA-04045" (orajs-test--message))))
-        ;; Compile errors: line and column of the JavaScript.
-        (goto-char (point-min))
-        (funcall (nth 2 sent)
-                 '(:compileErrors (:type "MLE MODULE" :object "U.CALC"
-                                   :errors [(:line 2 :position 3 :text "boom")]))
-                 nil)
-        ;; MLE positions count from 0 (checked against Oracle 23ai).
-        (should (equal (list (line-number-at-pos) (current-column)) '(2 3)))
-        (funcall (nth 2 sent) '(:output ["hello from js"]) nil)
-        (should (string-match-p "deployed" (orajs-test--message)))))
+          (insert "// note\n")
+          (should (string-prefix-p "CREATE OR REPLACE" (orajs-test--module-overlay-text))))
+      (kill-buffer buf)))
+  ;; No version: no VERSION clause.  A quote in one is doubled.
+  (should (equal (orajs--module-declaration-for "HR" "CALC" nil)
+                 "CREATE OR REPLACE MLE MODULE HR.CALC LANGUAGE JAVASCRIPT AS"))
+  (should (string-suffix-p "VERSION 'it''s' AS"
+                           (orajs--module-declaration-for "HR" "CALC" "it's"))))
+
+(ert-deftest orajs-module-edit-declaration ()
+  (let ((buf (orajs-test--module-buffer "export const x = 1;\n" nil)))
+    (unwind-protect
+        (with-current-buffer buf
+          (cl-letf (((symbol-function 'read-string)
+                     (lambda (_prompt initial)
+                       (should (equal initial orajs--module-declaration))
+                       (replace-regexp-in-string " AS\\'" " VERSION '2.0' AS" initial))))
+            (orajs-module-edit-declaration))
+          (should (string-match-p "VERSION '2.0' AS\\'" orajs--module-declaration))
+          (should (string-prefix-p orajs--module-declaration (orajs-test--module-overlay-text)))
+          (should (buffer-modified-p)))
+      (kill-buffer buf))))
+
+(ert-deftest orajs-module-compile ()
+  (let ((buf (orajs-test--module-buffer "export function f() {\n  return 1;\n}\n" "1.0")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let (sent)
+            (cl-letf (((symbol-function 'orajs-connected-p) #'always)
+                      ((symbol-function 'orajs--send)
+                       (lambda (op args cb) (setq sent (list op args cb)))))
+              (orajs-module-compile)
+              (should (equal (car sent) "exec"))
+              ;; The declaration, then the buffer.
+              (let ((header (concat orajs--module-declaration "\n")))
+                (should (equal (plist-get (nth 1 sent) :sql)
+                               (concat header (buffer-string))))
+                ;; An error at offset N of the DDL lands in the JavaScript.
+                (goto-char (point-min))
+                (funcall (nth 2 sent) nil (list :message "ORA-04045: bad"
+                                                :offset (+ (length header) 25)))
+                (should (= (point) 26))
+                (should (string-match-p "ORA-04045" (orajs-test--message))))
+              ;; Compile errors: Oracle's line is the buffer's line.
+              (goto-char (point-min))
+              (funcall (nth 2 sent)
+                       '(:compileErrors (:type "MLE MODULE" :object "U.CALC"
+                                         :errors [(:line 2 :position 3 :text "boom")]))
+                       nil)
+              (should (equal (list (line-number-at-pos) (current-column)) '(2 3)))
+              ;; Success: console.log shown, buffer no longer modified...
+              (set-buffer-modified-p t)
+              (orajs-module-compile)
+              (funcall (nth 2 sent) '(:output ["hello from js"]) nil)
+              (should (string-match-p "compiled" (orajs-test--message)))
+              (should-not (buffer-modified-p))
+              ;; ...unless it was edited while compiling.
+              (orajs-module-compile)
+              (insert " ")
+              (funcall (nth 2 sent) '() nil)
+              (should (buffer-modified-p)))))
+      (kill-buffer buf))
     (let ((out (get-buffer "*orajs-output*")))
       (should out)
-      (should (string-match-p "hello from js"
-                              (with-current-buffer out (buffer-string))))
+      (should (string-match-p "hello from js" (with-current-buffer out (buffer-string))))
       (kill-buffer out))))
+
+(ert-deftest orajs-module-compile-needs-or-replace ()
+  (let ((buf (orajs-test--module-buffer "export const x = 1;\n" nil)))
+    (unwind-protect
+        (with-current-buffer buf
+          (let (sent)
+            (cl-letf (((symbol-function 'orajs-connected-p) #'always)
+                      ((symbol-function 'orajs--send)
+                       (lambda (op args _cb) (setq sent (list op args)))))
+              (dolist (decl '("create mle module u.calc language javascript as"
+                              "CREATE MLE MODULE IF NOT EXISTS U.CALC LANGUAGE JAVASCRIPT AS"))
+                (setq orajs--module-declaration decl sent nil)
+                ;; Declined: nothing sent.
+                (cl-letf (((symbol-function 'y-or-n-p) #'ignore))
+                  (should-error (orajs-module-compile) :type 'user-error))
+                (should-not sent)
+                ;; Accepted: made CREATE OR REPLACE, then sent.
+                (cl-letf (((symbol-function 'y-or-n-p) #'always))
+                  (orajs-module-compile))
+                (should (orajs--module-replaces-p orajs--module-declaration))
+                (should (string-prefix-p "CREATE OR REPLACE " orajs--module-declaration))
+                (should (string-prefix-p "CREATE OR REPLACE "
+                                         (plist-get (nth 1 sent) :sql)))))))
+      (kill-buffer buf))))
 
 (ert-deftest orajs-grid-header-and-unload ()
   (unwind-protect
@@ -817,7 +900,7 @@ as mle language javascript
                                              (nth 1 case) (nth 2 case))))
         (goto-char pos)
         (should (looking-at-p (regexp-quote (nth 3 case)))))))
-  ;; A deployed buffer: blank lines before the code do not count.
+  ;; A module buffer: blank lines before the code do not count.
   (with-temp-buffer
     (insert "\n\nexport function f() {\n  return 1 +;\n}\n")
     (goto-char (orajs--mle-error-position (point-min) 2 12))

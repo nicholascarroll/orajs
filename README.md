@@ -48,19 +48,6 @@ auth-source (machine = connection name, login = user, and login =
 "wallet" for the wallet password), else a prompt. 
 
 
-## How To Deploy a JavaScript buffer as an MLE module
-
-While connected to Oracle (23ai or later), switch to your `.js` buffer, and enter:
-  
- `M-x orajs-deploy-module`
-
-You will be prompted for the module name. Then it sends Oracle 
-
-`CREATE OR REPLACE MLE MODULE <name> LANGUAGE JAVASCRIPT AS`
-
-followed by the contents of the current `.js` buffer. On success the echo area says "MLE module <name> deployed". Compile errors put point on the JavaScript line and column Oracle reports.
-
-
 ## License
 
 GNU GPL 3.0

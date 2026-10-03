@@ -526,13 +526,21 @@ const ops = {
   },
 
   // Stored source (ALL_SOURCE) of a PL/SQL unit or MLE module, as one string;
-  // null when there is none (e.g. no package body).
+  // null when there is none (e.g. no package body).  For an MLE module, also
+  // its VERSION, which is not part of the source.
   async source(a) {
     const r = await conn.execute(
       `select text from all_source
        where  owner = :owner and name = :name and type = :type order by line`,
       { owner: a.owner, name: a.name, type: a.type }, { fetchArraySize: 1000 });
-    return { text: r.rows.length ? r.rows.map((x) => x[0]).join('') : null };
+    const out = { text: r.rows.length ? r.rows.map((x) => x[0]).join('') : null };
+    if (a.type === 'MLE MODULE') {
+      const v = await conn.execute(
+        `select version from all_mle_modules where module_owner = :owner and module_name = :name`,
+        { owner: a.owner, name: a.name });
+      out.version = v.rows.length ? v.rows[0][0] : null;
+    }
+    return out;
   },
 
   // DDL of a table, view, sequence ... from DBMS_METADATA, as text.
