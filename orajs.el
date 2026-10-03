@@ -45,6 +45,8 @@
 ;;
 ;; Jump to definition (M-., back with M-,) finds the name at point in the
 ;; TAGS file if there is one, else in the database (source, or DDL).
+;; M-x orajs-find-object opens one from the database, from any buffer;
+;; with % in the name it searches, and you choose among the matches.
 ;; An MLE module (Oracle 23ai) opens as JavaScript in `js-mode', with its
 ;; CREATE statement shown above the code: C-c C-e edits that statement,
 ;; C-c C-c compiles.  Saved to a .sql file it becomes the whole script
@@ -1404,7 +1406,9 @@ long it took."
       (when (buffer-live-p source)
         (with-current-buffer source
           ;; Unless edited while it compiled: then those edits are not in.
-          (when (= tick (buffer-chars-modified-tick))
+          ;; Once visiting a file, modified means unsaved, not uncompiled.
+          (when (and (null buffer-file-name)
+                     (= tick (buffer-chars-modified-tick)))
             (set-buffer-modified-p nil))))
       (message "orajs: MLE module compiled (%.2fs)" seconds))))
 
@@ -2239,6 +2243,60 @@ and in the database only for names it does not have."
       (message "orajs: %s is a synonym for %s.%s"
                (car (append via nil)) (plist-get object :owner) (plist-get object :name)))
     (and object (orajs--object-xrefs object member))))
+
+;;;###autoload
+(defun orajs-find-object (name)
+  "Open the definition of NAME as stored in the database.
+NAME is as \\[xref-find-definitions] takes it (object, schema.object or
+package.member), defaulting to the name at point.  With a % in it, NAME
+is a LIKE pattern, [schema.]name in any case, and you choose among the
+objects it matches.  Unlike \\[xref-find-definitions] it works from any
+buffer and does not look in your TAGS file.  Back with \\[xref-go-back]."
+  (interactive
+   (progn
+     (unless (orajs-connected-p) (user-error "Not connected; use M-x orajs-connect"))
+     (let ((default (xref-backend-identifier-at-point 'orajs)))
+       (list (read-string (format-prompt "Database object (%% wildcard)" default)
+                          nil nil default)))))
+  (when (string-blank-p name) (user-error "No object name"))
+  (unless (orajs-connected-p) (user-error "Not connected; use M-x orajs-connect"))
+  (let ((xrefs (if (string-search "%" name)
+                   (orajs--object-xrefs (orajs--choose-object name))
+                 (orajs--db-definitions name))))
+    (unless xrefs (user-error "No definition of %s in the database" name))
+    (xref-push-marker-stack)
+    (funcall xref-show-definitions-function (lambda () xrefs) nil)))
+
+(defconst orajs--search-limit 500
+  "Most objects `orajs-find-object' offers for a pattern.")
+
+(defun orajs--choose-object (pattern)
+  "The object, chosen, of those whose names match PATTERN.
+PATTERN is [schema.]name with LIKE wildcards; the database matches it.
+A plist (:owner :name :type), as `orajs--resolve' returns."
+  (let* ((parts (split-string pattern "\\."))
+         (_ (when (> (length parts) 2)
+              (user-error "A pattern is [schema.]name: %s" pattern)))
+         (reply (orajs--request-sync
+                 "search" (list :owner (if (cdr parts) (car parts) "%")
+                                :name (car (last parts))
+                                :limit orajs--search-limit)
+                 30))
+         (choices (mapcar (lambda (row)
+                            (cons (format "%s.%s (%s)" (aref row 0) (aref row 1)
+                                          (downcase (aref row 2)))
+                                  (list :owner (aref row 0) :name (aref row 1)
+                                        :type (aref row 2))))
+                          (plist-get reply :rows))))
+    (cond
+     ((null choices) (user-error "Nothing in the database matches %s" pattern))
+     ((and (null (cdr choices)) (not (plist-get reply :more))) (cdar choices))
+     (t (cdr (assoc (completing-read
+                     (if (plist-get reply :more)
+                         (format "Object (first %d matches): " orajs--search-limit)
+                       (format "Object (%d matches): " (length choices)))
+                     choices nil t)
+                    choices))))))
 
 ;;;; Minor mode
 
