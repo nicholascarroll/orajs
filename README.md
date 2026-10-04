@@ -48,7 +48,7 @@ auth-source (machine = connection name, login = user, and login =
 
 ## Editing MLE (JavaScript) modules
 
-You can open an MLE module directly from the database (`M-.`), which opens its JavaScript in `js-mode`.  Its `CREATE` statement is shown above the code. The default keybinding to edit this is `C-c C-e`. `C-c C-c` compiles; errors put point where Oracle reports them.
+You can open an MLE module directly from the database (`M-x orajs-find-object`), which opens its JavaScript in `js-mode`.  Its `CREATE` statement is shown above the code. The default keybinding to edit this is `C-c C-e`. `C-c C-c` compiles; errors put point where Oracle reports them.
 
 Saving the buffer with a `.sql` or `pls` suffix (per your auto-mode-alist) adds the `CREATE` statement to the file and makes it a valid SQL script.
 
