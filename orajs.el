@@ -47,6 +47,8 @@
 ;; TAGS file if there is one, else in the database (source, or DDL).
 ;; M-x orajs-find-object opens one from the database, from any buffer;
 ;; with % in the name it searches, and you choose among the matches.
+;; In a package or type spec or body opened that way, M-` switches to
+;; the other half, at the same procedure or function.
 ;; An MLE module (Oracle 23ai) opens as JavaScript in `js-mode', with its
 ;; CREATE statement shown above the code: C-c C-e edits that statement,
 ;; C-c C-c compiles.  Saved to a .sql file it becomes the whole script
@@ -2003,6 +2005,15 @@ it is, not fetched again."
   (unless (derived-mode-p 'sql-mode) (sql-mode))
   (unless orajs-mode (orajs-mode 1)))
 
+(defconst orajs--spec-body-pairs
+  '(("PACKAGE" . "PACKAGE BODY") ("PACKAGE BODY" . "PACKAGE")
+    ("TYPE" . "TYPE BODY") ("TYPE BODY" . "TYPE"))
+  "Each stored unit type with a spec or body, and its other half.")
+
+(defvar-local orajs--stored-unit nil
+  "(OWNER NAME TYPE) of the package or type spec or body in this buffer,
+fetched from the database; see `orajs-toggle-spec-body'.")
+
 (defun orajs--source-buffer (owner name type)
   "Buffer with the stored source of OWNER.NAME of TYPE, or nil if none."
   (let ((mle (equal type "MLE MODULE"))
@@ -2015,9 +2026,38 @@ it is, not fetched again."
          (setq version (plist-get reply :version))
          (when-let* ((text (plist-get reply :text)))
            (if mle text (orajs--recreatable-source text owner name)))))
-     (if mle
-         (lambda () (orajs--module-setup owner name version))
-       #'orajs--sql-buffer-setup))))
+     (cond
+      (mle (lambda () (orajs--module-setup owner name version)))
+      ((assoc type orajs--spec-body-pairs)
+       (lambda ()
+         (orajs--sql-buffer-setup)
+         (setq orajs--stored-unit (list owner name type))))
+      (t #'orajs--sql-buffer-setup)))))
+
+(defun orajs-toggle-spec-body ()
+  "Switch between a stored package's or type's spec and body.
+Point goes to the procedure or function it was in, if the other half
+has it.  For a spec or body opened from the database, as by
+\\[xref-find-definitions]; back with \\[xref-go-back]."
+  (interactive)
+  (pcase-let ((`(,owner ,name ,type)
+               (or orajs--stored-unit
+                   (user-error "Not a package or type opened from the database"))))
+    (unless (orajs-connected-p) (user-error "Not connected; use M-x orajs-connect"))
+    (let* ((other (cdr (assoc type orajs--spec-body-pairs)))
+           (member (orajs--member-at-point))
+           (buf (or (orajs--source-buffer owner name other)
+                    (user-error "%s.%s has no %s" owner name (downcase other))))
+           (positions (and member (orajs--member-positions buf (car member)))))
+      (xref-push-marker-stack)
+      (pop-to-buffer-same-window buf)
+      (goto-char (or (and member (nth (cdr member) positions))
+                     (car positions)
+                     (point-min))))))
+
+(defun orajs--toggle-spec-body-filter (cmd)
+  "CMD in a stored package's or type's buffer, else nil (the key's usual binding)."
+  (and orajs--stored-unit cmd))
 
 (defun orajs--ddl-buffer (owner name type)
   "Buffer with DBMS_METADATA's DDL of OWNER.NAME of TYPE (a table, view ...)."
@@ -2030,23 +2070,47 @@ it is, not fetched again."
        (concat (string-trim text) ";\n")))
    #'orajs--sql-buffer-setup))
 
+(defconst orajs--member-decl-re
+  (rx bol (* space)
+      ;; An object type's method: MEMBER, STATIC, CONSTRUCTOR, MAP MEMBER ...
+      (* (or "overriding" "not" "final" "instantiable"
+             "member" "static" "constructor" "map" "order")
+         (+ space))
+      (or "procedure" "function") (+ space)
+      (group (+ (in "A-Za-z0-9_$#"))))
+  "A line declaring a procedure or function (group 1 its name).")
+
 (defun orajs--member-positions (buffer member)
   "Where BUFFER's PL/SQL declares procedure or function MEMBER (one per overload)."
   (with-current-buffer buffer
     (save-excursion
       (goto-char (point-min))
       (let ((case-fold-search t) found)
-        (while (re-search-forward
-                (rx bol (* space) (or "procedure" "function") (+ space)
-                    (literal member) (not (in "A-Za-z0-9_$#")))
-                nil t)
+        (while (re-search-forward orajs--member-decl-re nil t)
           (let ((pos (match-beginning 0)))
             ;; (Not bare `syntax-ppss': it leaves point at POS, and the
             ;; search would find this match again, forever.)
-            (unless (orajs--in-string-or-comment-p pos)
+            (when (and (string-equal-ignore-case (match-string 1) member)
+                       (not (orajs--in-string-or-comment-p pos)))
               (push (save-excursion (goto-char pos) (skip-chars-forward " \t") (point))
                     found))))
         (nreverse found)))))
+
+(defun orajs--member-at-point ()
+  "The procedure or function point is in, as (NAME . N).
+N counts NAME's overloads before it in this buffer, from 0.  Nil if
+point is before the first."
+  (save-excursion
+    (let ((eol (line-end-position))
+          (case-fold-search t)
+          name)
+      (end-of-line)
+      (while (and (null name) (re-search-backward orajs--member-decl-re nil t))
+        (unless (save-match-data (orajs--in-string-or-comment-p (match-beginning 0)))
+          (setq name (match-string-no-properties 1))))
+      (when name
+        (cons name (1- (seq-count (lambda (pos) (<= pos eol))
+                                  (orajs--member-positions (current-buffer) name))))))))
 
 (defun orajs--column-position (buffer column)
   "Where BUFFER's DDL lists COLUMN, or nil: its first quoted mention after the \"(\"."
@@ -2316,7 +2380,10 @@ Not bound to a key by default; bind it to a prefix you like, e.g.
   "t" #'orajs-make-tags)
 
 (defvar-keymap orajs-mode-map
-  "C-c C-c" #'orajs-execute)
+  "C-c C-c" #'orajs-execute
+  ;; As in emil; elsewhere M-` stays `tmm-menubar'.
+  "M-`" '(menu-item "" orajs-toggle-spec-body
+                    :filter orajs--toggle-spec-body-filter))
 
 (defun orajs--lighter ()
   "Mode-line lighter: the connection, with … while the cache syncs."

@@ -913,6 +913,58 @@ as mle language javascript
     (should (looking-at-p "\"ENAME\" VARCHAR2"))       ; the column, not the table
     (should-not (orajs--column-position (current-buffer) "nope"))))
 
+;; M-` in a stored package's or type's spec or body: the other half,
+;; at the same member and overload.
+(ert-deftest orajs-toggle-spec-body ()
+  (let ((sources
+         '(("PACKAGE" . "package p as\n  procedure a;\n  function f(n number) return number;\n  function f(s varchar2) return number;\nend;")
+           ("PACKAGE BODY" . "package body p as\n  -- procedure f is a comment\n  procedure a is begin null; end;\n  function f(n number) return number is\n  begin\n    return 1;\n  end;\n  function f(s varchar2) return number is\n  begin\n    return 2;\n  end;\nend;")
+           ("TYPE" . "type money_t as object (\n  amount number,\n  member function add(o money_t) return money_t,\n  static function zero return money_t\n);")
+           ("TYPE BODY" . "type body money_t as\n  static function zero return money_t is begin return null; end;\n  member function add(o money_t) return money_t is\n  begin\n    return self;\n  end;\nend;")))
+        (bufs nil))
+    (cl-letf (((symbol-function 'orajs-connected-p) #'always)
+              ((symbol-function 'orajs--request-sync)
+               (lambda (_op args &optional _timeout)
+                 (list :text (cdr (assoc (plist-get args :type) sources))))))
+      (unwind-protect
+          (let ((body (orajs--source-buffer "HR" "P" "PACKAGE BODY")))
+            (push body bufs)
+            (with-current-buffer body
+              (should (equal orajs--stored-unit '("HR" "P" "PACKAGE BODY")))
+              (should (eq (key-binding (kbd "M-`")) #'orajs-toggle-spec-body))
+              ;; Inside the second overload of F: to its declaration.
+              (search-forward "return 2"))
+            (set-window-buffer nil body)
+            (with-current-buffer body
+              (orajs-toggle-spec-body)
+              (push (current-buffer) bufs)
+              (should (equal (buffer-name) "*orajs: HR.P package*"))
+              (should (looking-at-p "function f(s varchar2)"))
+              ;; And back, from A.
+              (search-backward "procedure a")
+              (orajs-toggle-spec-body)
+              (should (eq (current-buffer) body))
+              (should (looking-at-p "procedure a is"))
+              ;; Before any member: the top.
+              (goto-char (point-min))
+              (orajs-toggle-spec-body)
+              (should (= (point) (point-min))))
+            ;; Object types: MEMBER and STATIC methods.
+            (let ((spec (orajs--source-buffer "HR" "MONEY_T" "TYPE")))
+              (push spec bufs)
+              (set-window-buffer nil spec)
+              (with-current-buffer spec
+                (search-forward "add(")
+                (orajs-toggle-spec-body)
+                (push (current-buffer) bufs)
+                (should (looking-at-p "member function add(o money_t) return money_t is")))))
+        (mapc #'kill-buffer (seq-filter #'buffer-live-p bufs)))))
+  ;; Elsewhere M-` keeps its usual binding.
+  (orajs-test--with-sql "select 1 from dual|"
+    (orajs-mode 1)
+    (should-not (eq (key-binding (kbd "M-`")) #'orajs-toggle-spec-body))
+    (should-error (orajs-toggle-spec-body) :type 'user-error)))
+
 ;;;; Jump to definition through TAGS (no database)
 
 (defconst orajs-test--tags-dir
