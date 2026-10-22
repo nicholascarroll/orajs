@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Part of orajs: https://github.com/nicholascarroll/orajs
-// This is a ridge between Emacs (orajs.el) and Oracle.
+// This is a bridge between Emacs (orajs.el) and Oracle.
 //
 // One process = one database connection (node-oracledb Thin mode: pure JS,
 // no Instant Client). Protocol: one JSON object per line on stdin/stdout.
@@ -11,9 +11,9 @@
 //
 // exec and fetch replies carry "output": DBMS_OUTPUT lines, when there are any.
 // Ops: connect, exec, fetch, serverOutput, summary, objects, columns, members,
-// dictionary, describe, resolve, source, ddl, break, quit. Requests are handled as they
-// arrive, so "break" can interrupt a running "exec". The connection keeps one
-// open cursor (the last query); a new exec closes it.
+// dictionary, describe, resolve, search, source, ddl, break, quit. Requests are
+// handled as they arrive, so "break" can interrupt a running "exec". The
+// connection keeps one open cursor (the last query); a new exec closes it.
 'use strict';
 
 const readline = require('readline');
@@ -317,7 +317,12 @@ async function definedType(owner, name) {
   return r.rows.length ? r.rows[0][0] : null;
 }
 
-async function resolve(written) {
+// A name as written in SQL ("emp", "hr.emp"), found the way Oracle would:
+// own object, then private synonym, then public synonym, following chains
+// (up to 4 hops). TYPEOF(owner, name) is the object's type if it is one of
+// the kinds wanted, else null. Returns {owner, name, type, via: synonyms
+// followed}, or null.
+async function followSynonyms(written, typeOf) {
   const parts = written.split('.');
   if (parts.length > 2 || parts.some((p) => !p)) return null;
   let owner = parts.length === 2 ? ident(parts[0]) : session.user;
@@ -325,7 +330,7 @@ async function resolve(written) {
   const synOwners = parts.length === 2 ? [owner] : [session.user, 'PUBLIC'];
   const via = [];
   for (let hop = 0; hop < 4; hop++) {
-    const type = await definedType(owner, name);
+    const type = await typeOf(owner, name);
     if (type) return { owner, name, type, via };
     const t = await synonymTarget(hop === 0 ? synOwners : [owner], name);
     if (!t) return null;
@@ -335,20 +340,11 @@ async function resolve(written) {
   return null;
 }
 
+const resolve = (written) => followSynonyms(written, definedType);
+
 async function describe(written) {
-  const parts = written.split('.');
-  if (parts.length > 2 || parts.some((p) => !p)) return null;
-  let owner = parts.length === 2 ? ident(parts[0]) : session.user;
-  let name = ident(parts[parts.length - 1]);
-  const synOwners = parts.length === 2 ? [owner] : [session.user, 'PUBLIC'];
-  for (let hop = 0; hop < 4; hop++) {
-    const type = await objectType(owner, name);
-    if (type) return describeObject(owner, name, type);
-    const t = await synonymTarget(hop === 0 ? synOwners : [owner], name);
-    if (!t) return null;
-    ({ owner, name } = t);
-  }
-  return null;
+  const o = await followSynonyms(written, objectType);
+  return o && describeObject(o.owner, o.name, o.type);
 }
 
 // What the schema cache holds: tables, views, and PL/SQL program units.
@@ -528,20 +524,23 @@ const ops = {
   // Objects whose owner and name match LIKE patterns, in any case: up to
   // LIMIT [owner, name, type] rows, of the kinds jump to definition opens;
   // more is true if there were others.  A materialized view is listed once
-  // (ALL_OBJECTS also has its table).
+  // (ALL_OBJECTS also has its table).  That is done in the query, not after
+  // it, so that more counts only rows that would be shown.
   async search(a) {
     const r = await conn.execute(
-      `select owner, object_name, object_type from all_objects
-       where  upper(owner) like upper(:owner) and upper(object_name) like upper(:name)
-       and    object_type in ('TABLE', 'VIEW', 'MATERIALIZED VIEW', 'SEQUENCE', 'PACKAGE',
-                              'PROCEDURE', 'FUNCTION', 'TRIGGER', 'TYPE', 'MLE MODULE')
-       and    object_name not like 'BIN$%'
-       order  by owner, object_name, object_type
+      `select o.owner, o.object_name, o.object_type from all_objects o
+       where  upper(o.owner) like upper(:owner) and upper(o.object_name) like upper(:name)
+       and    o.object_type in ('TABLE', 'VIEW', 'MATERIALIZED VIEW', 'SEQUENCE', 'PACKAGE',
+                                'PROCEDURE', 'FUNCTION', 'TRIGGER', 'TYPE', 'MLE MODULE')
+       and    o.object_name not like 'BIN$%'
+       and    not (o.object_type = 'TABLE' and exists (
+                     select 1 from all_objects m
+                     where  m.owner = o.owner and m.object_name = o.object_name
+                     and    m.object_type = 'MATERIALIZED VIEW'))
+       order  by o.owner, o.object_name, o.object_type
        fetch  first :n rows only`,
       { owner: a.owner, name: a.name, n: a.limit + 1 }, { fetchArraySize: 1000 });
-    const rows = r.rows.filter((x, i, all) => !(x[2] === 'TABLE' && i > 0 &&
-      all[i - 1][0] === x[0] && all[i - 1][1] === x[1] && all[i - 1][2] === 'MATERIALIZED VIEW'));
-    return { rows: rows.slice(0, a.limit), more: r.rows.length > a.limit };
+    return { rows: r.rows.slice(0, a.limit), more: r.rows.length > a.limit };
   },
 
   // Stored source (ALL_SOURCE) of a PL/SQL unit or MLE module, as one string;

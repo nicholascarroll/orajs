@@ -55,7 +55,8 @@ async function ok(op, args) {
 const ME = (env.ORAJS_USER || '').toUpperCase();
 const mine = (rows) => rows.filter((r) => r[0] === ME && r[1].startsWith('ORAJS_'));
 // Scratch objects, dropped before (leftovers from a failed run) and after.
-const SCRATCH = ['view orajs_recent_orders', 'table orajs_orders purge', 'procedure orajs_broken',
+const SCRATCH = ['materialized view orajs_mv', 'view orajs_recent_orders',
+                 'table orajs_orders purge', 'procedure orajs_broken',
                  'package orajs_pk', 'procedure orajs_tmp'];
 const dropScratch = async () => { for (const o of SCRATCH) await req('exec', { sql: `drop ${o}` }); };
 
@@ -301,6 +302,18 @@ test('search finds objects by LIKE patterns, in any case', async () => {
   assert.equal(one.rows.length, 1);
   assert.equal(one.more, true);
   assert.deepEqual((await ok('search', { owner: '%', name: 'no_such%', limit: 10 })).rows, []);
+});
+
+test('search lists a materialized view once, and more counts only rows shown', async () => {
+  await ok('exec', { sql: 'create materialized view orajs_mv as select id, customer from orajs_orders' });
+  try {
+    // ALL_OBJECTS has both a MATERIALIZED VIEW and a TABLE named ORAJS_MV.
+    const r = await ok('search', { owner: ME, name: 'ORAJS_MV', limit: 1 });
+    assert.deepEqual(r.rows, [[ME, 'ORAJS_MV', 'MATERIALIZED VIEW']]);
+    assert.equal(r.more, false);
+  } finally {
+    await req('exec', { sql: 'drop materialized view orajs_mv' });
+  }
 });
 
 test('break interrupts a long query', async () => {
